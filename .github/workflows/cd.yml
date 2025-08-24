@@ -1,0 +1,119 @@
+name: CD Pipeline
+on:
+  workflow_run:
+    workflows: ["CI Pipeline"]
+    types:
+      - completed
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    
+    steps:
+    - name: Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: nextjs-app
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        run-id: ${{ github.event.workflow_run.id }}
+    
+    - name: Extract files
+      shell: powershell
+      run: |
+        Write-Host "Extracting files..."
+        New-Item -ItemType Directory -Force -Path "C:\deploy\nextjs-app"
+        Expand-Archive -Path "nextjs-app.zip" -DestinationPath "C:\deploy\nextjs-app" -Force
+        Write-Host "Files extracted to C:\deploy\nextjs-app!"
+        Get-ChildItem "C:\deploy\nextjs-app"
+    
+    - name: Set up Node.js if not installed
+      shell: powershell
+      run: |
+        try {
+          $nodeVersion = node --version
+          Write-Host "Node.js is already installed: $nodeVersion"
+        } catch {
+          Write-Host "Node.js not found! Please install Node.js manually."
+          exit 1
+        }
+    
+    - name: Install dependencies
+      shell: powershell
+      run: |
+        Set-Location "C:\deploy\nextjs-app"
+        npm install --production
+    
+    - name: Verify PM2
+      shell: powershell
+      run: |
+        try {
+          $pm2Version = pm2 --version
+          Write-Host "PM2 version: $pm2Version"
+        } catch {
+          Write-Host "PM2 not found! Installing PM2..."
+          npm install -g pm2
+        }
+    
+    - name: Stop existing server
+      shell: powershell
+      continue-on-error: true
+      run: |
+        Set-Location "C:\deploy\nextjs-app"
+        Write-Host "Stopping any existing PM2 app..."
+        pm2 delete nextjs-app 2>$null || Write-Host "No existing PM2 app found"
+        
+        # Kill any process on port 3000
+        try {
+          $processes = Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue
+          if ($processes) {
+            Write-Host "Killing processes on port 3000..."
+            $processes | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+          }
+        } catch {
+          Write-Host "No processes found on port 3000"
+        }
+    
+    - name: Start Next.js app with PM2
+      shell: powershell
+      run: |
+        Set-Location "C:\deploy\nextjs-app"
+        Write-Host "Starting Next.js app with PM2..."
+        pm2 start npm --name nextjs-app -- start
+        pm2 save
+        Write-Host "Next.js app started with PM2!"
+    
+    - name: Verify server is accessible
+      shell: powershell
+      run: |
+        Write-Host "Testing server accessibility..."
+        Start-Sleep -Seconds 10
+        
+        $attempts = 0
+        $maxAttempts = 10
+        $serverResponding = $false
+        
+        while ($attempts -lt $maxAttempts -and -not $serverResponding) {
+          $attempts++
+          try {
+            Invoke-WebRequest -Uri "http://localhost:3000" -UseBasicParsing -TimeoutSec 5
+            Write-Host "Server responds on localhost:3000"
+            $serverResponding = $true
+          } catch {
+            Write-Host "Attempt $attempts : Server not ready, waiting..."
+            Start-Sleep -Seconds 3
+          }
+        }
+        
+        if ($serverResponding) {
+          Write-Host "✅ Next.js app is live at http://localhost:3000"
+          Write-Host "🎉 Deployment complete! Website running persistently with PM2."
+          pm2 status
+        } else {
+          Write-Host "❌ Server not responding after $maxAttempts attempts"
+          Write-Host "PM2 logs:"
+          pm2 logs nextjs-app --lines 20
+          Write-Host "PM2 status:"
+          pm2 status
+          exit 1
+        }
