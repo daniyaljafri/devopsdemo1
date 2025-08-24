@@ -2,7 +2,7 @@ name: CI Pipeline
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
 
 jobs:
   build:
@@ -20,15 +20,26 @@ jobs:
     - name: Install dependencies
       run: npm install
     
-    - name: Build Next.js app
-      run: npm run build
+    - name: Check if key files exist
+      run: |
+        if [ -f "index.js" ] && [ -f "package.json" ]; then
+          echo "Key Node.js files found!"
+        else
+          echo "Key files not found!"
+          exit 1
+        fi
+    
+    - name: Run tests
+      run: npm test
     
     - name: Create artifact
       run: |
-        zip -r nextjs-app.zip .next package*.json next.config.mjs public
+        echo "Creating artifact..."
+        zip -r website.zip . -x .git\*  # Zip everything except .git
+        echo "Artifact created successfully!"
     
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: nextjs-app
-        path: nextjs-app.zip
+        name: website-files
+        path: website.zip
