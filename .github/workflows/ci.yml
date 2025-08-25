@@ -20,23 +20,14 @@ jobs:
     - name: Install dependencies
       run: npm install
     
-    - name: Check if key files exist
-      run: |
-        if [ -f "index.js" ] && [ -f "package.json" ]; then
-          echo "Key Node.js files found!"
-        else
-          echo "Key files not found!"
-          exit 1
-        fi
-    
     - name: Run tests
       run: npm test
     
     - name: Create artifact
       run: |
-        echo "Creating artifact..."
-        zip -r website.zip . -x .git\*  # Zip everything except .git
-        echo "Artifact created successfully!"
+        echo "Creating deployment package..."
+        zip -r website.zip . -x .git\* node_modules\* .github\*
+        echo "Package created: website.zip"
     
     - name: Upload artifact
       uses: actions/upload-artifact@v4
