@@ -43,12 +43,16 @@ jobs:
         # Extract files
         Expand-Archive -Path "website.zip" -DestinationPath "C:\deploy\website" -Force
         
-        # Navigate to app directory (handle if files are in subdirectory)
-        if (Test-Path "C:\deploy\website\package.json") {
-          Set-Location "C:\deploy\website"
+        # Navigate to app directory (find package.json anywhere under deploy dir)
+        $pkg = Get-ChildItem -Path "C:\deploy\website" -Filter package.json -Recurse -File | Select-Object -First 1
+        if ($pkg) {
+          Set-Location $pkg.DirectoryName
+          Write-Host "Using app directory: $($pkg.DirectoryName)"
         } else {
-          $appDir = Get-ChildItem "C:\deploy\website" -Directory | Select-Object -First 1
-          Set-Location $appDir.FullName
+          Write-Host "❌ package.json not found under C:\deploy\website"
+          Write-Host "Directory tree:"
+          Get-ChildItem "C:\deploy\website" -Recurse
+          exit 1
         }
         
         # Install dependencies
@@ -60,16 +64,28 @@ jobs:
         # Stop existing app (ignore errors)
         pm2 delete hello-world -s 2>$null
         
-        # Navigate to app directory
-        if (Test-Path "C:\deploy\website\package.json") {
-          Set-Location "C:\deploy\website"
+        # Navigate to app directory (find package.json anywhere under deploy dir)
+        $pkg = Get-ChildItem -Path "C:\deploy\website" -Filter package.json -Recurse -File | Select-Object -First 1
+        if ($pkg) {
+          Set-Location $pkg.DirectoryName
+          Write-Host "Using app directory: $($pkg.DirectoryName)"
         } else {
-          $appDir = Get-ChildItem "C:\deploy\website" -Directory | Select-Object -First 1
-          Set-Location $appDir.FullName
+          Write-Host "❌ package.json not found under C:\deploy\website"
+          Write-Host "Directory tree:"
+          Get-ChildItem "C:\deploy\website" -Recurse
+          exit 1
         }
         
         # Start new app
-        pm2 start index.js --name hello-world
+        # Prefer npm script if present; fallback to node index.js
+        if ((Get-Content package.json | Out-String) -match '"start"\s*:\s*"') {
+          pm2 start npm --name hello-world -- start
+        } elseif (Test-Path "index.js") {
+          pm2 start index.js --name hello-world
+        } else {
+          Write-Host "❌ Neither npm start nor index.js found."
+          exit 1
+        }
         pm2 save
         
         # Quick health check
