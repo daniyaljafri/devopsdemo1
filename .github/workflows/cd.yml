@@ -40,8 +40,34 @@ jobs:
         Remove-Item -Path "C:\deploy\website" -Recurse -Force -ErrorAction SilentlyContinue
         New-Item -ItemType Directory -Force -Path "C:\deploy\website"
         
+        # Check zip file before extraction
+        Write-Host "Checking zip file before extraction..."
+        if (Test-Path "website.zip") {
+          $zipSize = (Get-Item "website.zip").Length
+          Write-Host "Zip file size: $zipSize bytes"
+          
+          # Try to list contents of zip without extracting
+          try {
+            $zipContents = [System.IO.Compression.ZipFile]::OpenRead("website.zip").Entries | Select-Object Name, Length
+            Write-Host "Zip contents:"
+            $zipContents | ForEach-Object { Write-Host "  $($_.Name) ($($_.Length) bytes)" }
+          } catch {
+            Write-Host "⚠️ Could not read zip contents: $($_.Exception.Message)"
+          }
+        } else {
+          Write-Host "❌ website.zip not found!"
+          exit 1
+        }
+        
         # Extract files
-        Expand-Archive -Path "website.zip" -DestinationPath "C:\deploy\website" -Force
+        Write-Host "Extracting website.zip..."
+        try {
+          Expand-Archive -Path "website.zip" -DestinationPath "C:\deploy\website" -Force
+          Write-Host "✅ Extraction completed"
+        } catch {
+          Write-Host "❌ Extraction failed: $($_.Exception.Message)"
+          exit 1
+        }
         
         # Navigate to app directory (find package.json anywhere under deploy dir)
         $pkg = Get-ChildItem -Path "C:\deploy\website" -Filter package.json -Recurse -File | Select-Object -First 1
