@@ -33,73 +33,104 @@ jobs:
           fs.writeFileSync(`${process.env.GITHUB_WORKSPACE}/website.zip`, Buffer.from(download.data));
     
     - name: Extract files
+      shell: powershell
       run: |
-        echo "Extracting files..."
-        mkdir -p /home/hp/website
-        unzip -o website.zip -d /home/hp/website/
-        echo "Files extracted to /home/hp/website/!"
-        ls -la /home/hp/website/
+        Write-Host "Extracting files..."
+        New-Item -ItemType Directory -Force -Path "C:\deploy\website"
+        Expand-Archive -Path "website.zip" -DestinationPath "C:\deploy\website" -Force
+        Write-Host "Files extracted to C:\deploy\website!"
+        Get-ChildItem "C:\deploy\website"
     
     - name: Set up Node.js if not installed
+      shell: powershell
       run: |
-        if ! command -v node &> /dev/null; then
-          echo "Installing Node.js..."
-          curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-          sudo apt-get install -y nodejs
-        fi
-        node --version
+        try {
+          $nodeVersion = node --version
+          Write-Host "Node.js is already installed: $nodeVersion"
+        } catch {
+          Write-Host "Node.js not found! Please install Node.js manually."
+          exit 1
+        }
     
     - name: Install dependencies
-      working-directory: /home/hp/website
-      run: npm install
+      shell: powershell
+      run: |
+        Set-Location "C:\deploy\website"
+        npm install
     
     - name: Verify PM2
+      shell: powershell
       run: |
-        if ! command -v pm2 &> /dev/null; then
-          echo "PM2 not found! Exiting..."
-          exit 1
-        fi
-        pm2 --version
+        try {
+          $pm2Version = pm2 --version
+          Write-Host "PM2 version: $pm2Version"
+        } catch {
+          Write-Host "PM2 not found! Installing PM2..."
+          npm install -g pm2
+        }
     
     - name: Stop existing server
-      working-directory: /home/hp/website
+      shell: powershell
+      continue-on-error: true
       run: |
-        echo "Stopping any existing PM2 app..."
-        pm2 delete hello-world || echo "No existing PM2 app found"
-        if lsof -ti:3000 >/dev/null 2>&1; then
-          echo "Killing processes on port 3000..."
-          sudo kill -9 $(lsof -ti:3000) || echo "Could not kill processes on port 3000"
-        fi
+        Set-Location "C:\deploy\website"
+        Write-Host "Stopping any existing PM2 app..."
+        pm2 delete hello-world 2>$null
+        if ($LASTEXITCODE -eq 0) {
+          Write-Host "Existing app stopped successfully"
+        } else {
+          Write-Host "No existing app found"
+        }
+        
+        # Kill any process on port 3000
+        try {
+          $processes = Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue
+          if ($processes) {
+            Write-Host "Killing processes on port 3000..."
+            $processes | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+          }
+        } catch {
+          Write-Host "No processes found on port 3000"
+        }
     
     - name: Start Node.js app with PM2
-      working-directory: /home/hp/website
+      shell: powershell
       run: |
-        echo "Starting app with PM2..."
+        Set-Location "C:\deploy\website"
+        Write-Host "Starting app with PM2..."
         pm2 start index.js --name hello-world
         pm2 save
-        sudo env PATH=$PATH:/usr/bin /usr/lib/node_modules/pm2/bin/pm2 startup systemd -u hp
-        echo "App started with PM2!"
+        Write-Host "App started with PM2!"
     
     - name: Verify server is accessible
+      shell: powershell
       run: |
-        echo "Testing server accessibility..."
-        sleep 5
-        for i in {1..10}; do
-          if curl -s http://localhost:3000 >/dev/null 2>&1; then
-            echo "Server responds on localhost:3000"
-            break
-          else
-            echo "Attempt $i: Server not ready, waiting..."
-            sleep 2
-          fi
-        done
-        if curl -s http://172.26.60.61:3000 >/dev/null 2>&1; then
-          echo "✅ Website is live at http://172.26.60.61:3000"
-        else
-          echo "❌ Server not responding externally"
+        Write-Host "Testing server accessibility..."
+        Start-Sleep -Seconds 5
+        
+        $attempts = 0
+        $maxAttempts = 10
+        $serverResponding = $false
+        
+        while ($attempts -lt $maxAttempts -and -not $serverResponding) {
+          $attempts++
+          try {
+            Invoke-WebRequest -Uri "http://localhost:3000" -UseBasicParsing -TimeoutSec 5
+            Write-Host "Server responds on localhost:3000"
+            $serverResponding = $true
+          } catch {
+            Write-Host "Attempt $attempts : Server not ready, waiting..."
+            Start-Sleep -Seconds 2
+          }
+        }
+        
+        if ($serverResponding) {
+          Write-Host "✅ Website is live at http://localhost:3000"
+          Write-Host "🎉 Deployment complete! Website running persistently with PM2."
+          pm2 status
+        } else {
+          Write-Host "❌ Server not responding after $maxAttempts attempts"
           pm2 logs hello-world --lines 20
           pm2 status
           exit 1
-        fi
-        echo "🎉 Deployment complete! Website running persistently with PM2."
-        echo "🌐 Access your website at: http://172.26.60.61:3000"
+        }
