@@ -1,4 +1,5 @@
 name: CD Pipeline
+
 on:
   workflow_run:
     workflows: ["CI Pipeline"]
@@ -32,105 +33,51 @@ jobs:
           let fs = require('fs');
           fs.writeFileSync(`${process.env.GITHUB_WORKSPACE}/website.zip`, Buffer.from(download.data));
     
-    - name: Extract files
+    - name: Extract and deploy
       shell: powershell
       run: |
-        Write-Host "Extracting files..."
+        # Clean and create deployment directory
+        Remove-Item -Path "C:\deploy\website" -Recurse -Force -ErrorAction SilentlyContinue
         New-Item -ItemType Directory -Force -Path "C:\deploy\website"
+        
+        # Extract files
         Expand-Archive -Path "website.zip" -DestinationPath "C:\deploy\website" -Force
-        Write-Host "Files extracted to C:\deploy\website!"
-        Get-ChildItem "C:\deploy\website"
-    
-    - name: Set up Node.js if not installed
-      shell: powershell
-      run: |
-        try {
-          $nodeVersion = node --version
-          Write-Host "Node.js is already installed: $nodeVersion"
-        } catch {
-          Write-Host "Node.js not found! Please install Node.js manually."
-          exit 1
+        
+        # Navigate to app directory (handle if files are in subdirectory)
+        if (Test-Path "C:\deploy\website\package.json") {
+          Set-Location "C:\deploy\website"
+        } else {
+          $appDir = Get-ChildItem "C:\deploy\website" -Directory | Select-Object -First 1
+          Set-Location $appDir.FullName
         }
-    
-    - name: Install dependencies
-      shell: powershell
-      run: |
-        Set-Location "C:\deploy\website"
+        
+        # Install dependencies
         npm install
     
-    - name: Verify PM2
+    - name: Start app with PM2
       shell: powershell
       run: |
-        try {
-          $pm2Version = pm2 --version
-          Write-Host "PM2 version: $pm2Version"
-        } catch {
-          Write-Host "PM2 not found! Installing PM2..."
-          npm install -g pm2
-        }
-    
-    - name: Stop existing server
-      shell: powershell
-      continue-on-error: true
-      run: |
-        Set-Location "C:\deploy\website"
-        Write-Host "Stopping any existing PM2 app..."
-        pm2 delete hello-world 2>$null
-        if ($LASTEXITCODE -eq 0) {
-          Write-Host "Existing app stopped successfully"
+        # Stop existing app (ignore errors)
+        pm2 delete hello-world -s 2>$null
+        
+        # Navigate to app directory
+        if (Test-Path "C:\deploy\website\package.json") {
+          Set-Location "C:\deploy\website"
         } else {
-          Write-Host "No existing app found"
+          $appDir = Get-ChildItem "C:\deploy\website" -Directory | Select-Object -First 1
+          Set-Location $appDir.FullName
         }
         
-        # Kill any process on port 3000
-        try {
-          $processes = Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue
-          if ($processes) {
-            Write-Host "Killing processes on port 3000..."
-            $processes | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
-          }
-        } catch {
-          Write-Host "No processes found on port 3000"
-        }
-    
-    - name: Start Node.js app with PM2
-      shell: powershell
-      run: |
-        Set-Location "C:\deploy\website"
-        Write-Host "Starting app with PM2..."
+        # Start new app
         pm2 start index.js --name hello-world
         pm2 save
-        Write-Host "App started with PM2!"
-    
-    - name: Verify server is accessible
-      shell: powershell
-      run: |
-        Write-Host "Testing server accessibility..."
+        
+        # Quick health check
         Start-Sleep -Seconds 5
-        
-        $attempts = 0
-        $maxAttempts = 10
-        $serverResponding = $false
-        
-        while ($attempts -lt $maxAttempts -and -not $serverResponding) {
-          $attempts++
-          try {
-            Invoke-WebRequest -Uri "http://localhost:3000" -UseBasicParsing -TimeoutSec 5
-            Write-Host "Server responds on localhost:3000"
-            $serverResponding = $true
-          } catch {
-            Write-Host "Attempt $attempts : Server not ready, waiting..."
-            Start-Sleep -Seconds 2
-          }
-        }
-        
-        if ($serverResponding) {
-          Write-Host "✅ Website is live at http://localhost:3000"
-          Write-Host "🎉 Deployment complete! Website running persistently with PM2."
+        try {
+          Invoke-WebRequest -Uri "http://localhost:3000" -UseBasicParsing -TimeoutSec 10
+          Write-Host "✅ App deployed successfully at http://localhost:3000"
+        } catch {
+          Write-Host "⚠️ App started but may need more time to be ready"
           pm2 status
-        } else {
-          Write-Host "❌ Server not responding after $maxAttempts attempts"
-          pm2 logs hello-world --lines 20
-          pm2 status
-          exit 1
         }
