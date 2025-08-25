@@ -12,108 +12,94 @@ jobs:
     
     steps:
     - name: Download artifact
-      uses: actions/download-artifact@v4
+      uses: actions/github-script@v7
       with:
-        name: nextjs-app
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-        run-id: ${{ github.event.workflow_run.id }}
+        script: |
+          let allArtifacts = await github.rest.actions.listWorkflowRunArtifacts({
+             owner: context.repo.owner,
+             repo: context.repo.repo,
+             run_id: context.payload.workflow_run.id,
+          });
+          let matchArtifact = allArtifacts.data.artifacts.filter((artifact) => {
+            return artifact.name == "website-files"
+          })[0];
+          let download = await github.rest.actions.downloadArtifact({
+             owner: context.repo.owner,
+             repo: context.repo.repo,
+             artifact_id: matchArtifact.id,
+             archive_format: 'zip',
+          });
+          let fs = require('fs');
+          fs.writeFileSync(`${process.env.GITHUB_WORKSPACE}/website.zip`, Buffer.from(download.data));
     
     - name: Extract files
-      shell: powershell
       run: |
-        Write-Host "Extracting files..."
-        New-Item -ItemType Directory -Force -Path "C:\deploy\nextjs-app"
-        Expand-Archive -Path "nextjs-app.zip" -DestinationPath "C:\deploy\nextjs-app" -Force
-        Write-Host "Files extracted to C:\deploy\nextjs-app!"
-        Get-ChildItem "C:\deploy\nextjs-app"
+        echo "Extracting files..."
+        mkdir -p /home/hp/website
+        unzip -o website.zip -d /home/hp/website/
+        echo "Files extracted to /home/hp/website/!"
+        ls -la /home/hp/website/
     
     - name: Set up Node.js if not installed
-      shell: powershell
       run: |
-        try {
-          $nodeVersion = node --version
-          Write-Host "Node.js is already installed: $nodeVersion"
-        } catch {
-          Write-Host "Node.js not found! Please install Node.js manually."
-          exit 1
-        }
+        if ! command -v node &> /dev/null; then
+          echo "Installing Node.js..."
+          curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+        fi
+        node --version
     
     - name: Install dependencies
-      shell: powershell
-      run: |
-        Set-Location "C:\deploy\nextjs-app"
-        npm install --production
+      working-directory: /home/hp/website
+      run: npm install
     
     - name: Verify PM2
-      shell: powershell
       run: |
-        try {
-          $pm2Version = pm2 --version
-          Write-Host "PM2 version: $pm2Version"
-        } catch {
-          Write-Host "PM2 not found! Installing PM2..."
-          npm install -g pm2
-        }
+        if ! command -v pm2 &> /dev/null; then
+          echo "PM2 not found! Exiting..."
+          exit 1
+        fi
+        pm2 --version
     
     - name: Stop existing server
-      shell: powershell
-      continue-on-error: true
+      working-directory: /home/hp/website
       run: |
-        Set-Location "C:\deploy\nextjs-app"
-        Write-Host "Stopping any existing PM2 app..."
-        pm2 delete nextjs-app 2>$null || Write-Host "No existing PM2 app found"
-        
-        # Kill any process on port 3000
-        try {
-          $processes = Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue
-          if ($processes) {
-            Write-Host "Killing processes on port 3000..."
-            $processes | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
-          }
-        } catch {
-          Write-Host "No processes found on port 3000"
-        }
+        echo "Stopping any existing PM2 app..."
+        pm2 delete hello-world || echo "No existing PM2 app found"
+        if lsof -ti:3000 >/dev/null 2>&1; then
+          echo "Killing processes on port 3000..."
+          sudo kill -9 $(lsof -ti:3000) || echo "Could not kill processes on port 3000"
+        fi
     
-    - name: Start Next.js app with PM2
-      shell: powershell
+    - name: Start Node.js app with PM2
+      working-directory: /home/hp/website
       run: |
-        Set-Location "C:\deploy\nextjs-app"
-        Write-Host "Starting Next.js app with PM2..."
-        pm2 start npm --name nextjs-app -- start
+        echo "Starting app with PM2..."
+        pm2 start index.js --name hello-world
         pm2 save
-        Write-Host "Next.js app started with PM2!"
+        sudo env PATH=$PATH:/usr/bin /usr/lib/node_modules/pm2/bin/pm2 startup systemd -u hp
+        echo "App started with PM2!"
     
     - name: Verify server is accessible
-      shell: powershell
       run: |
-        Write-Host "Testing server accessibility..."
-        Start-Sleep -Seconds 10
-        
-        $attempts = 0
-        $maxAttempts = 10
-        $serverResponding = $false
-        
-        while ($attempts -lt $maxAttempts -and -not $serverResponding) {
-          $attempts++
-          try {
-            Invoke-WebRequest -Uri "http://localhost:3000" -UseBasicParsing -TimeoutSec 5
-            Write-Host "Server responds on localhost:3000"
-            $serverResponding = $true
-          } catch {
-            Write-Host "Attempt $attempts : Server not ready, waiting..."
-            Start-Sleep -Seconds 3
-          }
-        }
-        
-        if ($serverResponding) {
-          Write-Host "✅ Next.js app is live at http://localhost:3000"
-          Write-Host "🎉 Deployment complete! Website running persistently with PM2."
-          pm2 status
-        } else {
-          Write-Host "❌ Server not responding after $maxAttempts attempts"
-          Write-Host "PM2 logs:"
-          pm2 logs nextjs-app --lines 20
-          Write-Host "PM2 status:"
+        echo "Testing server accessibility..."
+        sleep 5
+        for i in {1..10}; do
+          if curl -s http://localhost:3000 >/dev/null 2>&1; then
+            echo "Server responds on localhost:3000"
+            break
+          else
+            echo "Attempt $i: Server not ready, waiting..."
+            sleep 2
+          fi
+        done
+        if curl -s http://172.26.60.61:3000 >/dev/null 2>&1; then
+          echo "✅ Website is live at http://172.26.60.61:3000"
+        else
+          echo "❌ Server not responding externally"
+          pm2 logs hello-world --lines 20
           pm2 status
           exit 1
-        }
+        fi
+        echo "🎉 Deployment complete! Website running persistently with PM2."
+        echo "🌐 Access your website at: http://172.26.60.61:3000"
